@@ -1,3 +1,4 @@
+import struct
 import sys
 import zipfile
 import os
@@ -115,14 +116,18 @@ class MyWindow(QMainWindow):
                 anchor_idx = i
                 break
         
-        header = self.binary_content[:anchor_idx]
+        header = self.binary_content[:anchor_idx - 4] # skip the 4 bytes indicating the number of bytes in the data
 
         # 3. Generate New Binary Stream
         new_stream = processor.encode_kimo_stream(new_temps)
+
+        # 4. Pack the number of bytes in the data
+        payload_length = len(new_stream)
+        length_header = struct.pack('<I', payload_length)
         
         # 4. Save the new Donnees file locally
         with open(self.target_path + "Donnees", "wb") as f:
-            f.write(header + new_stream)
+            f.write(header + length_header + new_stream)
 
         # 5. Package into KFK (Assuming config/signature are in current dir)
         files_list = [self.target_path + "Donnees", self.target_path + "Configuration", self.target_path + "Signatures"]
