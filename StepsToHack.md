@@ -13,6 +13,7 @@
 10. The four byte separator looks like this: 80 KL MN PQ. 
 The Byte PQ can be either 00 (for positive first value) or 80 (for negative first value). 
 The Bytes KL MN are used to record the first value of the session multiplied by 10 in Little Endian format. For example if the bytes are 5E 01, in little endian it converts to 350. Dividing it by 10 gives the first value of the temperature which is 35.0. 
+11. There are four more bytes before the four byte separator that contains the total number of data bytes in little endian format.
 11. The consecutive values in the Donnees file are the delta (Differential data) from the previous value. If the delta is positive, it is multiplied by 10 and added to 0x80. If the delta is negative, it is multiplied by 10 and added to 0xC0. And if the temperature doesn't change, the number of times we get the same temperature is counted and added to 0x00. For example consider the following data and byte stream:
 
 80 98 00 80 81 06 c1 81 03
