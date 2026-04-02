@@ -56,6 +56,7 @@ class MyWindow(QMainWindow):
             self.binary_content = f.read()
         # Decode
         static, readings = processor.decode_kimo_stream(self.binary_content)
+        print(readings)
         # Write to excel file
         if self.write_excel(static, readings, os.path.basename(self.file_path).strip('.kfk')):
             # Write filename to lineedit
@@ -79,15 +80,17 @@ class MyWindow(QMainWindow):
         ws["A2"] = "Software Version"
         ws["A3"] = "Start Date and Time"
         ws["A7"] = "Reading #"
-        ws["B7"] = "Temp (°C)"
+        for i in range(len(readings)):
+            ws.cell(row=7, column=i+2, value=f"Channel {i+1}") # Start from column B (index 2)
 
         # 3. Write data
         ws["B1"] = static['serial']
         ws["B2"] = static['version']
         ws["B3"] = datetime.datetime.strptime(static['start_DTime'], "%d/%m/%Y %H:%M:%S")
-        for i, val in enumerate(readings):
-            ws[f"A{i+8}"] = i + 1  # Serial number starting from 1
-            ws[f"B{i+8}"] = val
+        print(len(readings), len(readings[0]))
+        for i in range(len(readings[0])):
+            for j in range(len(readings)):
+                ws.cell(row=i+8, column=j+2, value=readings[j][i]) # Start from row 8 (index 7) and column B (index 2)
 
         # 4. Formats and styling
         # Auto-adjust column widths
@@ -99,10 +102,10 @@ class MyWindow(QMainWindow):
         ws["B3"].alignment = openpyxl.styles.Alignment(horizontal="left")
 
         # Auto-format headers
-        header_range = ws["A7:B7"]
-        for cell in header_range[0]:
-            cell.font = openpyxl.styles.Font(bold=True)
-            cell.fill = openpyxl.styles.PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+        # Select range A7:len(readings)+1 and make them bold with gray background
+        for cell in ws["A7:A" + str(7 + len(readings))]:
+            cell[0].font = openpyxl.styles.Font(bold=True)
+            cell[0].fill = openpyxl.styles.PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
         # 5. Save the workbook
         wb.save(self.output_file) 

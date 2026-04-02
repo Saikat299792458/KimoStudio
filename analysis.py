@@ -2,7 +2,7 @@ import struct
 class processor:
     def __init__(self):
         pass
-    
+
     def decode_kimo_stream(data):
         """Universal decoder handling 2-byte magnitudes and sign flags."""
         # Find serial number and software version
@@ -41,36 +41,39 @@ class processor:
         static['start_DTime'] = start_DTime
 
         # Extract readings...
-        anchor_idx = -1
+        results = []
+        channel = -1
+        current_val = 0.0
+        i = 0
         # Search for 80 [XX] [YY] [00 or 80]
-        for i in range(len(data) - 4):
-            if data[i] == 0x80 and (data[i+3] == 0x00 or data[i+3] == 0x80):
-                anchor_idx = i
-                break
-        if anchor_idx == -1: return None
-
-        # Extract 2-byte magnitude and sign flag
-        magnitude = struct.unpack('<H', data[anchor_idx+1:anchor_idx+3])[0]
-        is_negative = (data[anchor_idx+3] == 0x80)
-        
-        current_val = -(magnitude / 10.0) if is_negative else (magnitude / 10.0)
-        results = [round(current_val, 1)]
-
-        # Process Delta Stream
-        cursor = anchor_idx + 4
-        while cursor < len(data):
-            byte = data[cursor]
-            cursor += 1
-            if byte == 0x00: continue
+        while i < len(data):
+            if len(data) - i >= 4 and data[i] == 0x80 and (data[i+3] == 0x00 or data[i+3] == 0x80):
+                results.append([])
+                channel += 1
+                # Extract 2-byte magnitude and sign flag
+                magnitude = struct.unpack('<H', data[i+1:i+3])[0]
+                is_negative = (data[i+3] == 0x80)
+                
+                current_val = -(magnitude / 10.0) if is_negative else (magnitude / 10.0)
+                results[channel] = [round(current_val, 1)]
+                i += 4
+                continue
             
-            if 0x01 <= byte <= 0x7F: # RLE (Repeat)
-                for _ in range(byte): results.append(round(current_val, 1))
-            elif 0x81 <= byte <= 0xBF: # Increase
-                current_val += (byte - 0x80) / 10.0
-                results.append(round(current_val, 1))
-            elif 0xC1 <= byte <= 0xFF: # Decrease
-                current_val -= (byte - 0xC0) / 10.0
-                results.append(round(current_val, 1))
+            if channel >= 0:
+                byte = data[i]
+                if byte == 0x00 or byte == 0x80: 
+                    i += 1
+                    continue
+
+                if 0x01 <= byte <= 0x7F: # RLE (Repeat)
+                    for _ in range(byte): results[channel].append(round(current_val, 1))
+                elif 0x81 <= byte <= 0xBF: # Increase
+                    current_val += (byte - 0x80) / 10.0
+                    results[channel].append(round(current_val, 1))
+                elif 0xC1 <= byte <= 0xFF: # Decrease
+                    current_val -= (byte - 0xC0) / 10.0
+                    results[channel].append(round(current_val, 1))
+            i += 1
         return static, results
     
     def write_header(static_data, original_header):
