@@ -1,82 +1,70 @@
 import struct
 class processor:
-    def __init__(self):
-        pass
+    def extract_data(data):
+        """Extracts the time series data from the binary stream using the anchor and RLE/delta encoding."""
+        results = []
+        current_val = 0.0
+        # Extract 2-byte magnitude and sign flag
+        magnitude = struct.unpack('<H', data[1:3])[0]
+        is_negative = (data[3] == 0x80)
+        
+        current_val = -(magnitude / 10.0) if is_negative else (magnitude / 10.0)
+        results.append(round(current_val, 1))
 
-    def decode_kimo_stream(data):
-        """Universal decoder handling 2-byte magnitudes and sign flags."""
-        # Find serial number and software version
+        for i in range(4, len(data)):
+            byte = data[i]
+            if data[i] == 0x00 or data[i] == 0x80: 
+                continue
+
+            if 0x01 <= byte <= 0x7F: # RLE (Repeat)
+                for _ in range(byte): results.append(round(current_val, 1))
+            elif 0x81 <= byte <= 0xBF: # Increase
+                current_val += (byte - 0x80) / 10.0
+                results.append(round(current_val, 1))
+            elif 0xC1 <= byte <= 0xFF: # Decrease
+                current_val -= (byte - 0xC0) / 10.0
+                results.append(round(current_val, 1))
+        return results
+
+    def extract_static(header):
+        """"Extracts static fields from the header and returns them as a dictionary."""
         static = {}
         # convert 17 and 18 th bytes to ascii
-        serial = data[17:19].decode('ascii') # 2K
+        serial = header[17:19].decode('ascii') # 2K
         serial += " "
         # Convert the 19th and 20th bytes to an two digit integer with leading zeros if necessary and append to serial
-        serial += f"{(struct.unpack('<H', data[19:21])[0]):02d}" # 17
+        serial += f"{(struct.unpack('<H', header[19:21])[0]):02d}" # 17
         serial += "."
         # Convert the 21st byte to an two digit integer with leading zeros if necessary and append to serial
-        serial += f"{(data[21]):02d}" # 09
+        serial += f"{(header[21]):02d}" # 09
         serial += "."
         # Convert the next 3 bytes to an 5 digit integer with leading zeros if necessary and append to serial
-        serial += f"{(int.from_bytes(data[22:25], byteorder='little')):05d}"
+        serial += f"{(int.from_bytes(header[22:25], byteorder='little')):05d}"
         static['serial'] = serial
 
         # Convert the next 3 bytes to float with 1 decimal place and store as software version
-        version = struct.unpack('<f', data[25:29])[0]
+        version = struct.unpack('<f', header[25:29])[0]
         static['version'] = f"{version:.2f}"
         
         # Find Start Date and Time dynamically
         start_idx = 63
         # Find the null byte that ends the first string (The ID)
-        null1_idx = data.find(b'\x00', start_idx)
+        null1_idx = header.find(b'\x00', start_idx)
         # Find the null byte that ends the second string (The Comment)
-        null2_idx = data.find(b'\x00', null1_idx + 1)
+        null2_idx = header.find(b'\x00', null1_idx + 1)
 
         # The Date block is exactly 20 bytes after the second null byte
         date_pos = null2_idx + 20
-        start_DTime = f"{(data[date_pos]):02d}" # Day
-        start_DTime += f"/{(data[date_pos + 1]):02d}" # Month
-        year = struct.unpack('<H', data[date_pos + 2:date_pos + 4])[0]
+        start_DTime = f"{(header[date_pos]):02d}" # Day
+        start_DTime += f"/{(header[date_pos + 1]):02d}" # Month
+        year = struct.unpack('<H', header[date_pos + 2:date_pos + 4])[0]
         start_DTime += f"/{year:04d}" # Year
-        start_DTime += f" {data[date_pos + 4]:02d}:{data[date_pos + 5]:02d}:{data[date_pos + 6]:02d}" # Time
+        start_DTime += f" {header[date_pos + 4]:02d}:{header[date_pos + 5]:02d}:{header[date_pos + 6]:02d}" # Time
         static['start_DTime'] = start_DTime
 
-        # Extract readings...
-        results = []
-        channel = -1
-        current_val = 0.0
-        i = 0
-        # Search for 80 [XX] [YY] [00 or 80]
-        while i < len(data):
-            if len(data) - i >= 4 and data[i] == 0x80 and (data[i+3] == 0x00 or data[i+3] == 0x80):
-                results.append([])
-                channel += 1
-                # Extract 2-byte magnitude and sign flag
-                magnitude = struct.unpack('<H', data[i+1:i+3])[0]
-                is_negative = (data[i+3] == 0x80)
-                
-                current_val = -(magnitude / 10.0) if is_negative else (magnitude / 10.0)
-                results[channel] = [round(current_val, 1)]
-                i += 4
-                continue
-            
-            if channel >= 0:
-                byte = data[i]
-                if byte == 0x00 or byte == 0x80: 
-                    i += 1
-                    continue
-
-                if 0x01 <= byte <= 0x7F: # RLE (Repeat)
-                    for _ in range(byte): results[channel].append(round(current_val, 1))
-                elif 0x81 <= byte <= 0xBF: # Increase
-                    current_val += (byte - 0x80) / 10.0
-                    results[channel].append(round(current_val, 1))
-                elif 0xC1 <= byte <= 0xFF: # Decrease
-                    current_val -= (byte - 0xC0) / 10.0
-                    results[channel].append(round(current_val, 1))
-            i += 1
-        return static, results
+        return static
     
-    def write_header(static_data, original_header):
+    def compress_static(static_data, original_header):
         """Writes a new header based on the original, replacing only the static fields."""
         # Start with the original header as a bytearray for mutability
         new_header = bytearray(original_header)
@@ -121,24 +109,24 @@ class processor:
         new_header[date_pos + 6] = second
         return new_header
 
-    def encode_kimo_stream(temps):
-        """Universal encoder that correctly formats the 4-byte anchor."""
-        first_temp = temps[0]
-        magnitude = int(round(abs(first_temp) * 10))
-        sign_flag = 0x80 if first_temp < 0 else 0x00
+    def compress_data(records):
+        """compresses a list of data records into KIMO binary format using RLE and delta encoding."""
+        first_record = records[0]
+        magnitude = int(round(abs(first_record) * 10))
+        sign_flag = 0x80 if first_record < 0 else 0x00
         
         # Build Anchor: 0x80 + 2-byte Mag + Sign
         stream = bytearray([0x80]) + struct.pack('<H', magnitude) + bytearray([sign_flag])
         
-        current_temp = first_temp
+        current_record = first_record
         i = 1
-        while i < len(temps):
-            target = temps[i]
+        while i < len(records):
+            target = records[i]
             # CASE A: Run-Length Encoding (Stability)
             # Check how many subsequent values are identical
             repeat_count = 0
-            while (i + repeat_count < len(temps) and 
-                temps[i + repeat_count] == current_temp and 
+            while (i + repeat_count < len(records) and 
+                records[i + repeat_count] == current_record and 
                 repeat_count < 127):
                 repeat_count += 1
             
@@ -147,9 +135,9 @@ class processor:
                 i += repeat_count
                 continue
             # CASE B: Delta Encoding
-            diff = int(round((target - current_temp) * 10))
+            diff = int(round((target - current_record) * 10))
             if diff > 0: stream.append(0x80 + diff)
             elif diff < 0: stream.append(0xC0 + abs(diff))
-            current_temp = target
+            current_record = target
             i += 1
         return stream

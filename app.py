@@ -26,41 +26,51 @@ class MyWindow(QMainWindow):
         self.ui.Save.setEnabled(False)
         self.ui.EditExcel.setEnabled(False)
         self.password = "@MoKa_2433"  # Default password
+        self.target_path = os.getenv("APPDATA").replace("\\", "/") + "/KimoStudio/"
         self.saved = True
+        self.header = None
+        self.number_of_streams = None
         self.show()
     
     def openExcel(self):
         """Open the generated Excel file in the default application."""
-        if os.path.exists(self.output_file):
-            os.startfile(self.output_file.replace("/", "\\")) # Takees forever to open
+        if os.path.exists(self.excel_path):
+            os.startfile(self.excel_path.replace("/", "\\")) # Takees forever to open
             self.saved = False
         else:
             QMessageBox.warning(self, "File Not Found", "The Excel file does not exist. Please load a KFK file first.")
-
 
     def read_kfk(self):
         """Main function to read KFK file, decode it, and write to Excel."""
         # 1. Select the .kfk file
         self.file_path, _  = QFileDialog.getOpenFileName(self, "Open Kimo Data File", "", "Kimo Data File (*.kfk)")
         if not self.file_path: return
-        self.target_path = os.getenv("APPDATA").replace("\\", "/")
+        # Unzip to default directory
         with zipfile.ZipFile(self.file_path, 'r') as zf:
-            # Extract to $env:appdata
             zf.extractall(path=self.target_path, pwd=self.password.encode())
-
-        # Set default excel file location
-        self.output_file = self.target_path + "/" + os.path.basename(self.file_path).replace('.kfk', '.xlsx')
         # Read Donnees from KFK
-        self.target_path += "/Campagnes/"
-        with open(self.target_path + "Donnees", "rb") as f:
-            self.binary_content = f.read()
-        # Decode
-        static, readings = processor.decode_kimo_stream(self.binary_content)
-        print(readings)
+        with open(self.target_path + "/Campagnes/Donnees", "rb") as f:
+            binary_content = f.read()
+        
+        # Separate and extract the header and data streams
+        marker = None
+        static = {}
+        streams = []
+        for i in range(len(binary_content) - 4): # Search for 80 [XX] [YY] [00 or 80]
+            if binary_content[i] == 0x80 and (binary_content[i+3] == 0x00 or binary_content[i+3] == 0x80):
+                if marker:
+                    streams.append(processor.extract_data(binary_content[marker:i-4])) # Extract the stream between markers
+                else:
+                    self.header = binary_content[:i-4] # Store the header for later use
+                    static = processor.extract_static(self.header) # Extract static data from the header
+                marker = i
+        if marker:
+            streams.append(processor.extract_data(binary_content[marker:])) # Extract the last stream
+        self.number_of_streams = len(streams)
+
         # Write to excel file
-        if self.write_excel(static, readings, os.path.basename(self.file_path).strip('.kfk')):
-            # Write filename to lineedit
-            # show only filename without path
+        if self.write_excel(static, streams):
+            # Write filename to lineedit, show only filename without path
             self.ui.KimoFile.setText(os.path.basename(self.file_path))
             # Enable all the widgets
             self.ui.Save.setEnabled(True)
@@ -68,29 +78,30 @@ class MyWindow(QMainWindow):
             # Open Excel to show the result
             self.openExcel()
     
-    def write_excel(self, static, readings, title):
+    def write_excel(self, static, streams):
         """Write the decoded data into an Excel file with proper formatting."""
         # 1. Open Excel file and select active worksheet
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = title
+        ws.title = os.path.basename(self.file_path).strip('.kfk')
 
         # 2. Write headers
         ws["A1"] = "Serial No."
         ws["A2"] = "Software Version"
         ws["A3"] = "Start Date and Time"
         ws["A7"] = "Reading #"
-        for i in range(len(readings)):
+        for i in range(self.number_of_streams):
             ws.cell(row=7, column=i+2, value=f"Channel {i+1}") # Start from column B (index 2)
 
         # 3. Write data
         ws["B1"] = static['serial']
         ws["B2"] = static['version']
         ws["B3"] = datetime.datetime.strptime(static['start_DTime'], "%d/%m/%Y %H:%M:%S")
-        print(len(readings), len(readings[0]))
-        for i in range(len(readings[0])):
-            for j in range(len(readings)):
-                ws.cell(row=i+8, column=j+2, value=readings[j][i]) # Start from row 8 (index 7) and column B (index 2)
+
+        for i in range(max([len(x) for x in streams])):
+            ws.cell(row=i+8, column=1, value=i+1)
+            for j in range(self.number_of_streams):
+                ws.cell(row=i+8, column=j+2, value=streams[j][i]) # Start from row 8 (index 7) and column B (index 2)
 
         # 4. Formats and styling
         # Auto-adjust column widths
@@ -103,58 +114,49 @@ class MyWindow(QMainWindow):
 
         # Auto-format headers
         # Select range A7:len(readings)+1 and make them bold with gray background
-        for cell in ws["A7:A" + str(7 + len(readings))]:
-            cell[0].font = openpyxl.styles.Font(bold=True)
-            cell[0].fill = openpyxl.styles.PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        for row in ws.iter_rows(min_row=7, max_row=7, min_col=1, max_col=1+self.number_of_streams):
+            for cell in row:
+                cell.font = openpyxl.styles.Font(bold=True)
+                cell.fill = openpyxl.styles.PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
         # 5. Save the workbook
-        wb.save(self.output_file) 
+        self.excel_path = self.target_path + "/" + os.path.basename(self.file_path).replace('.kfk', '.xlsx')
+        wb.save(self.excel_path) 
         return True
         
-
     def write_kfk(self):
         """Main function to write KFK file based on edited Excel data."""
         # 1. Create a save file dialog to get output kfk path
         save_path, _ = QFileDialog.getSaveFileName(self, "Save Kimo Data File", self.file_path, "Kimo Data File (*.kfk)")
         if not save_path:
             return
-        excel_path = self.output_file
 
         # 2. Read Excel Data
-        df = pd.read_excel(excel_path, header=None)
+        df = pd.read_excel(self.excel_path, header=None)
         static_data = { # Read static data
             'serial': df.iloc[0, 1],
             'version': df.iloc[1, 1],
             'start_DTime': df.iloc[2, 1].strftime("%d/%m/%Y %H:%M:%S") # Convert datetime to string
         }
-
-        new_temps = df.iloc[7:, 1].tolist() # Read temperature data starting from row 8 (index 7)
-
-        # 3. Read Original Binary Content to get the header and anchor position
-        anchor_idx = -1 # Find the anchor to know where the header ends
-        for i in range(len(self.binary_content) - 4): # Search for 80 [XX] [YY] [00 or 80]
-            if self.binary_content[i] == 0x80 and (self.binary_content[i+3] == 0x00 or self.binary_content[i+3] == 0x80):
-                anchor_idx = i
-                break
+        # Read channel data starting from row 8 (index 7) and column 2 (index 1)
+        new_streams = [df.iloc[7:, i+1].tolist() for i in range(self.number_of_streams)]
         
-        header = self.binary_content[:anchor_idx - 4] # skip the 4 bytes indicating the number of bytes in the data
-
-        # 4. Generate New static header and Binary Stream
-        new_header = processor.write_header(static_data, header)
-        new_stream = processor.encode_kimo_stream(new_temps)
-
-        # 5. Pack the number of bytes in the data
-        payload_length = len(new_stream)
-        length_header = struct.pack('<I', payload_length)
+        # 3. Generate New static header and Binary Stream
+        new_data = processor.compress_static(static_data, self.header)
+        new_streams = [processor.compress_data(stream) for stream in new_streams]
+        for stream in new_streams:
+            payload_length = len(stream)
+            new_data += struct.pack('<I', payload_length)
+            new_data += stream
         
-        # 6. Save the new Donnees file locally
-        with open(self.target_path + "Donnees", "wb") as f:
-            f.write(new_header + length_header + new_stream)
+        # 4. Write to a new Donnees file
+        campagnes = self.target_path + "Campagnes/"
+        with open(campagnes + "Donnees", "wb") as f:
+            f.write(new_data)
 
-        # 7. Package into KFK (Assuming config/signature are in current dir)
-        files_list = [self.target_path + "Donnees", self.target_path + "Configuration", self.target_path + "Signatures"]
+        # 5. Package into KFK (Assuming config/signature are in current dir)
+        files_list = [campagnes + "Donnees", campagnes + "Configuration", campagnes + "Signatures"]
         prefix_list = ['Campagnes/', 'Campagnes/', 'Campagnes/']
-
         pyminizip.compress_multiple(files_list, prefix_list, save_path, self.password, 5)
         self.saved = True
         QMessageBox.information(self, "Success", f"Successfully generated {save_path}")
@@ -182,6 +184,7 @@ class MyWindow(QMainWindow):
             if reply == QMessageBox.No:
                 event.ignore()
                 return
+        self.hide()
         try:
             shutil.rmtree(self.target_path)
             self.terminate_excel_with_file(self.output_file)

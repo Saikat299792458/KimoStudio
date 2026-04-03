@@ -215,3 +215,5 @@ __marimo__/
 # Miscellaneous
 *.xlsx
 *.pdf
+*.csv
+*.zip
