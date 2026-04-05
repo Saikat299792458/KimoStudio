@@ -53,21 +53,22 @@ class MyWindow(QMainWindow):
             binary_content = f.read()
         
         # Separate and extract the header and data streams
-        marker = None
         static = {}
         streams = []
-        for i in range(len(binary_content) - 4): # Search for 80 [XX] [YY] [00 or 80]
-            if binary_content[i] == 0x80 and (binary_content[i+3] == 0x00 or binary_content[i+3] == 0x80):
-                if marker:
-                    streams.append(processor.extract_data(binary_content[marker:i-4])) # Extract the stream between markers
-                else:
-                    self.header = binary_content[:i-4] # Store the header for later use
+        pos = 0
+        while pos < len(binary_content):
+            if binary_content[pos] == 0x80:
+                length = struct.unpack('<I', binary_content[pos-4:pos])[0]
+                block = binary_content[pos : pos + length]
+                if len(streams) == 0:
+                    self.header = binary_content[:pos-4] # Store the header for later use
                     static = processor.extract_static(self.header) # Extract static data from the header
-                marker = i
-        if marker:
-            streams.append(processor.extract_data(binary_content[marker:])) # Extract the last stream
+                streams.append(processor.extract_data(block))
+                pos = pos + length + 4
+                continue
+            pos += 1
         self.number_of_streams = len(streams)
-
+        
         # Write to excel file
         if self.write_excel(static, streams):
             # Write filename to lineedit, show only filename without path

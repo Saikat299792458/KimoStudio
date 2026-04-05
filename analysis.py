@@ -4,19 +4,20 @@ class processor:
         """Extracts the time series data from the binary stream using the anchor and RLE/delta encoding."""
         results = []
         current_val = 0.0
-        # Extract 2-byte magnitude and sign flag
-        magnitude = struct.unpack('<H', data[1:3])[0]
-        is_negative = (data[3] == 0x80)
-        
-        current_val = -(magnitude / 10.0) if is_negative else (magnitude / 10.0)
-        results.append(round(current_val, 1))
-
-        for i in range(4, len(data)):
+        i = 0
+        while i < len(data):
             byte = data[i]
-            if data[i] == 0x00 or data[i] == 0x80: 
+            
+            if byte == 0x80: # Reset
+                magnitude = struct.unpack('<H', data[i+1:i+3])[0]
+                is_negative = (data[i+3] == 0x80)
+        
+                current_val = -(magnitude / 10.0) if is_negative else (magnitude / 10.0)
+                results.append(round(current_val, 1))
+                i += 4
                 continue
 
-            if 0x01 <= byte <= 0x7F: # RLE (Repeat)
+            elif 0x01 <= byte <= 0x7F: # RLE (Repeat)
                 for _ in range(byte): results.append(round(current_val, 1))
             elif 0x81 <= byte <= 0xBF: # Increase
                 current_val += (byte - 0x80) / 10.0
@@ -24,6 +25,7 @@ class processor:
             elif 0xC1 <= byte <= 0xFF: # Decrease
                 current_val -= (byte - 0xC0) / 10.0
                 results.append(round(current_val, 1))
+            i += 1
         return results
 
     def extract_static(header):
@@ -111,33 +113,32 @@ class processor:
 
     def compress_data(records):
         """compresses a list of data records into KIMO binary format using RLE and delta encoding."""
-        first_record = records[0]
-        magnitude = int(round(abs(first_record) * 10))
-        sign_flag = 0x80 if first_record < 0 else 0x00
-        
-        # Build Anchor: 0x80 + 2-byte Mag + Sign
-        stream = bytearray([0x80]) + struct.pack('<H', magnitude) + bytearray([sign_flag])
-        
-        current_record = first_record
-        i = 1
+        current_val = -274.0 # Start with an impossible low value to ensure the first record is always encoded as an anchor
+        stream = bytearray()
+        i = 0
+        repeat_count = 0
         while i < len(records):
             target = records[i]
-            # CASE A: Run-Length Encoding (Stability)
-            # Check how many subsequent values are identical
-            repeat_count = 0
-            while (i + repeat_count < len(records) and 
-                records[i + repeat_count] == current_record and 
-                repeat_count < 127):
-                repeat_count += 1
-            
+            diff = int(round((target - current_val) * 10))
+            if diff == 0:
+                    repeat_count += 1
+                    i += 1
+                    continue
             if repeat_count > 0:
                 stream.append(repeat_count)
-                i += repeat_count
-                continue
-            # CASE B: Delta Encoding
-            diff = int(round((target - current_record) * 10))
-            if diff > 0: stream.append(0x80 + diff)
-            elif diff < 0: stream.append(0xC0 + abs(diff))
-            current_record = target
+                repeat_count = 0
+            # Case 1: Delta is too big or it's the first record, we need to write an anchor
+            if abs(diff) > 63:
+                magnitude = int(round(abs(target) * 10))
+                sign_flag = 0x80 if target < 0 else 0x00
+                stream += bytearray([0x80]) + struct.pack('<H', magnitude) + bytearray([sign_flag])
+            else:
+                # Case 2: Delta is small enough to encode directly
+                if diff > 0: stream.append(0x80 + diff)
+                elif diff < 0: stream.append(0xC0 + abs(diff))
+            current_val = target
             i += 1
+        if repeat_count > 0:
+                stream.append(repeat_count)
+        
         return stream

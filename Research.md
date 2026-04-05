@@ -41,20 +41,38 @@
 Following the header metadata, each measurement channel (Temperature, RH, etc.) is stored as an independent block.
 
 ### Channel Preamble
-Each channel starts with a **4-byte Little-Endian Integer** indicating the total number of records (data points) for that specific channel.
+Every channel begins with a **4-byte Little-Endian unsigned integer** representing the length of the compressed data payload that immediately follows.
 
-### The Delta-Encoded Stream
-The actual measurement data begins immediately after the count with the marker byte `0x80`.
+| Offset | Length | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `0x00` | 4 Bytes | **Payload Length ($L$):** Size of the compressed stream. | `28 00 00 00` (40 bytes) |
+| `0x04` | $L$ Bytes | **Compressed Payload:** The actual encoded data. | `80 DD 00 00...` |
 
-1.  **Initial Base Value (2 Bytes):** The first reading after `0x80`. Stored as a 2-byte Little-Endian integer. 
-    * *Formula:* `Value = Integer / 10`
-2. **Sign Byte:** After the base value, 1 byte contains the sign of the first value. `0x00` for **positive** and `0x80` for **negative**.
-2.  **Delta Bytes:** Subsequent bytes describe the change relative to the *previous* value:
-    * **Positive Delta:** `0x81` to `0xBF` $\rightarrow$ Add `(Byte - 0x80) * 0.1` to the decimal value.
-    * **Negative Delta:** `0xC1` to `0xFF` $\rightarrow$ Subtract `(Byte - 0xC0) * 0.1` to the decimal value.
-    * **Repeat Count:** `0x01` to `0x7F` $\rightarrow$ The previous value remains unchanged for $N$ records.
+---
 
+### Compressed Payload Logic
+The payload is a stream of bytes interpreted sequentially. It uses a hybrid of **Anchor Points**, **Delta Encoding**, and **Run-Length Encoding (RLE)**.
 
+#### A. Base Reset / Anchor Point (`0x80`)
+An anchor defines an absolute starting value. It is required at the beginning of a stream and whenever a value change exceeds **±6.3 units**.
+
+* **Format:** `0x80` + `2-byte Magnitude (LE)` + `1-byte Sign`
+* **Magnitude:** Value $\times 10$ (e.g., $22.1$ becomes $221$ or `0x00DD`).
+* **Sign:** `0x00` for positive, `0x80` for negative.
+* **Full Example:** `80 DD 00 00` $\rightarrow$ $+22.1$.
+
+#### B. Delta Encoding (`0x81` – `0xFF`)
+Small changes are encoded in a single byte relative to the previous value.
+* **Positive Delta (`0x81` to `0xBF`):** Add $(Byte - 0x80)$ to the current value.
+    * *Example:* `0x81` is $+0.1$, `0x85` is $+0.5$.
+* **Negative Delta (`0xC1` to `0xFF`):** Subtract $(Byte - 0xC0)$ from the current value.
+    * *Example:* `0xC1` is $-0.1$, `0xC4` is $-0.4$.
+
+#### C. Run-Length Encoding / Stability (`0x01` – `0x7F`)
+If a byte falls in the range `1` to `127`, it commands the decoder to **repeat the last known value** $N$ times.
+* *Example:* `0x05` means "the next 5 readings are identical to the current one."
+
+---
 
 ## 4. Multi-Channel Logic
 Channels are appended sequentially in the file. To process a file with multiple sensors:
