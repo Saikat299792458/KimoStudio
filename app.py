@@ -87,17 +87,19 @@ class MyWindow(QMainWindow):
         ws.title = os.path.basename(self.file_path).strip('.kfk')
 
         # 2. Write headers
-        ws["A1"] = "Serial No."
-        ws["A2"] = "Software Version"
-        ws["A3"] = "Start Date and Time"
+        ws["A1"] = "Model"
+        ws["A2"] = "Serial No."
+        ws["A3"] = "Software Version"
+        ws["A4"] = "Start Date and Time"
         ws["A7"] = "Reading #"
         for i in range(self.number_of_streams):
             ws.cell(row=7, column=i+2, value=f"Channel {i+1}") # Start from column B (index 2)
 
         # 3. Write data
-        ws["B1"] = static['serial']
-        ws["B2"] = static['version']
-        ws["B3"] = datetime.datetime.strptime(static['start_DTime'], "%d/%m/%Y %H:%M:%S")
+        ws["B1"] = static['model']
+        ws["B2"] = static['serial']
+        ws["B3"] = static['version']
+        ws["B4"] = datetime.datetime.strptime(static['start_DTime'], "%d/%m/%Y %H:%M:%S")
 
         for i in range(max([len(x) for x in streams])):
             ws.cell(row=i+8, column=1, value=i+1)
@@ -135,13 +137,14 @@ class MyWindow(QMainWindow):
         # 2. Read Excel Data
         df = pd.read_excel(self.excel_path, header=None)
         static_data = { # Read static data
-            'serial': df.iloc[0, 1],
-            'version': df.iloc[1, 1],
-            'start_DTime': df.iloc[2, 1].strftime("%d/%m/%Y %H:%M:%S") # Convert datetime to string
+            'model': df.iloc[0, 1],
+            'serial': df.iloc[1, 1],
+            'version': df.iloc[2, 1],
+            'start_DTime': df.iloc[3, 1].strftime("%d/%m/%Y %H:%M:%S") # Convert datetime to string
         }
         # Read channel data starting from row 8 (index 7) and column 2 (index 1)
         new_streams = [df.iloc[7:, i+1].tolist() for i in range(self.number_of_streams)]
-        
+        print(new_streams)
         # 3. Generate New static header and Binary Stream
         new_data = processor.compress_static(static_data, self.header)
         new_streams = [processor.compress_data(stream) for stream in new_streams]

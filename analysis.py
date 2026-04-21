@@ -31,6 +31,10 @@ class processor:
     def extract_static(header):
         """"Extracts static fields from the header and returns them as a dictionary."""
         static = {}
+        # Extract Model Number
+        static['model'] = header[7:14].decode('ascii')
+
+        # Extract Serial Number
         # convert 17 and 18 th bytes to ascii
         serial = header[17:19].decode('ascii') # 2K
         serial += " "
@@ -70,6 +74,9 @@ class processor:
         """Writes a new header based on the original, replacing only the static fields."""
         # Start with the original header as a bytearray for mutability
         new_header = bytearray(original_header)
+
+        # Update Model Number (Bytes 7-14)
+        new_header[7:14] = static_data['model'].encode('ascii')
         
         # Update Serial Number (Bytes 17-24)
         serial_parts = static_data['serial'].split(' ')
