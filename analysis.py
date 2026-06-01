@@ -32,7 +32,7 @@ class processor:
         """"Extracts static fields from the header and returns them as a dictionary."""
         static = {}
         # Extract Model Number
-        static['model'] = header[7:14].decode('ascii')
+        static['model'] = header[7:14].decode('ascii', errors='ignore').strip('\x00') # bytes 7-14, remove null bytes and decode as ascii
 
         # Extract Serial Number
         # convert 17 and 18 th bytes to ascii
@@ -58,7 +58,6 @@ class processor:
         null1_idx = header.find(b'\x00', start_idx)
         # Find the null byte that ends the second string (The Comment)
         null2_idx = header.find(b'\x00', null1_idx + 1)
-
         # The Date block is exactly 20 bytes after the second null byte
         date_pos = null2_idx + 20
         start_DTime = f"{(header[date_pos]):02d}" # Day
@@ -76,8 +75,10 @@ class processor:
         new_header = bytearray(original_header)
 
         # Update Model Number (Bytes 7-14)
-        new_header[7:14] = static_data['model'].encode('ascii')
-        
+        # encode to 7 bytes ascii, with optional null byte padding if the model number is shorter than 7 characters
+        model_bytes = static_data['model'].encode('ascii')[:7].ljust(7, b'\x00')
+        new_header[7:14] = model_bytes
+
         # Update Serial Number (Bytes 17-24)
         serial_parts = static_data['serial'].split(' ')
         serial_main = serial_parts[0] # e.g. "2K"
@@ -96,7 +97,7 @@ class processor:
         version_float = float(static_data['version'])
         new_header[25:29] = struct.pack('<f', version_float) # might have serious problem, use database instead
         
-        # Update Interval (Dynamically find position after second null byte)
+        # Dynamically find position after second null byte
         start_idx = 63
         null1_idx = new_header.find(b'\x00', start_idx)
         null2_idx = new_header.find(b'\x00', null1_idx + 1)
@@ -132,6 +133,10 @@ class processor:
                     i += 1
                     continue
             if repeat_count > 0:
+                # What if repeat count exceeds 127? We need to split it into multiple RLE blocks
+                while repeat_count > 127:
+                    stream.append(127)
+                    repeat_count -= 127
                 stream.append(repeat_count)
                 repeat_count = 0
             # Case 1: Delta is too big or it's the first record, we need to write an anchor
@@ -146,6 +151,9 @@ class processor:
             current_val = target
             i += 1
         if repeat_count > 0:
+                while repeat_count > 127:
+                    stream.append(127)
+                    repeat_count -= 127
                 stream.append(repeat_count)
         
         return stream

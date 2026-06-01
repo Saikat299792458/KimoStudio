@@ -53,24 +53,26 @@ class MyWindow(QMainWindow):
             binary_content = f.read()
         
         # Separate and extract the header and data streams
-        static = {}
-        streams = []
-        pos = 0
+        self.static = {}
+        self.streams = []
+        # The end of header is marked by the following sequence of bytes: 0x01 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x01 0x00 0x00 0x00
+        header_end_sequence = b'\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00'
+        header_end_pos = binary_content.find(header_end_sequence)
+        self.header = binary_content[:header_end_pos + len(header_end_sequence)]
+        self.static = processor.extract_static(self.header)
+        pos = header_end_pos + len(header_end_sequence)
         while pos < len(binary_content):
             if binary_content[pos] == 0x80:
                 length = struct.unpack('<I', binary_content[pos-4:pos])[0]
                 block = binary_content[pos : pos + length]
-                if len(streams) == 0:
-                    self.header = binary_content[:pos-4] # Store the header for later use
-                    static = processor.extract_static(self.header) # Extract static data from the header
-                streams.append(processor.extract_data(block))
+                self.streams.append(processor.extract_data(block))
                 pos = pos + length + 4
                 continue
             pos += 1
-        self.number_of_streams = len(streams)
+        self.number_of_streams = len(self.streams)
         
         # Write to excel file
-        if self.write_excel(static, streams):
+        if self.write_excel():
             # Write filename to lineedit, show only filename without path
             self.ui.KimoFile.setText(os.path.basename(self.file_path))
             # Enable all the widgets
@@ -79,7 +81,7 @@ class MyWindow(QMainWindow):
             # Open Excel to show the result
             self.openExcel()
     
-    def write_excel(self, static, streams):
+    def write_excel(self):
         """Write the decoded data into an Excel file with proper formatting."""
         # 1. Open Excel file and select active worksheet
         wb = openpyxl.Workbook()
@@ -96,15 +98,15 @@ class MyWindow(QMainWindow):
             ws.cell(row=7, column=i+2, value=f"Channel {i+1}") # Start from column B (index 2)
 
         # 3. Write data
-        ws["B1"] = static['model']
-        ws["B2"] = static['serial']
-        ws["B3"] = static['version']
-        ws["B4"] = datetime.datetime.strptime(static['start_DTime'], "%d/%m/%Y %H:%M:%S")
+        ws["B1"] = self.static['model']
+        ws["B2"] = self.static['serial']
+        ws["B3"] = self.static['version']
+        ws["B4"] = datetime.datetime.strptime(self.static['start_DTime'], "%d/%m/%Y %H:%M:%S")
 
-        for i in range(max([len(x) for x in streams])):
+        for i in range(max([len(x) for x in self.streams])):
             ws.cell(row=i+8, column=1, value=i+1)
             for j in range(self.number_of_streams):
-                ws.cell(row=i+8, column=j+2, value=streams[j][i]) # Start from row 8 (index 7) and column B (index 2)
+                ws.cell(row=i+8, column=j+2, value=self.streams[j][i]) # Start from row 8 (index 7) and column B (index 2)
 
         # 4. Formats and styling
         # Auto-adjust column widths
@@ -143,11 +145,10 @@ class MyWindow(QMainWindow):
             'start_DTime': df.iloc[3, 1].strftime("%d/%m/%Y %H:%M:%S") # Convert datetime to string
         }
         # Read channel data starting from row 8 (index 7) and column 2 (index 1)
-        new_streams = [df.iloc[7:, i+1].tolist() for i in range(self.number_of_streams)]
-        print(new_streams)
+        new_values = [df.iloc[7:, i+1].tolist() for i in range(self.number_of_streams)]
         # 3. Generate New static header and Binary Stream
         new_data = processor.compress_static(static_data, self.header)
-        new_streams = [processor.compress_data(stream) for stream in new_streams]
+        new_streams = [processor.compress_data(stream) for stream in new_values]
         for stream in new_streams:
             payload_length = len(stream)
             new_data += struct.pack('<I', payload_length)
@@ -163,8 +164,69 @@ class MyWindow(QMainWindow):
         prefix_list = ['Campagnes/', 'Campagnes/', 'Campagnes/']
         pyminizip.compress_multiple(files_list, prefix_list, save_path, self.password, 5)
         self.saved = True
+        # 6. Track the modification
+        try:
+            self.track(new_values, static_data, save_path)
+        except Exception as e:
+            raise e
         QMessageBox.information(self, "Success", f"Successfully generated {save_path}")
     
+    def track(self, new_values, static_data, save_path):
+        """Track IP address, GUID, date/time, username, and fileinfo for post processing."""
+        # Get UserName
+        username = os.getlogin()
+        # Get IP Address
+        import socket
+        hostname = socket.gethostname()    
+        ip_address = socket.gethostbyname(hostname)    
+
+        # Get Mac address
+        import uuid
+        mac_num = uuid.getnode()
+        # Format the integer into standard XX:XX:XX:XX:XX:XX format
+        mac_hex = f"{mac_num:012x}"
+        mac_formatted = ":".join(mac_hex[i:i+2] for i in range(0, 12, 2))
+
+        # Get current date and time
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Calculate modification percentage by comparing the new streams and original streams
+        original_streams = self.streams
+        total_values = sum(len(stream) for stream in original_streams)
+        modified_values = sum(1 for i in range(len(original_streams)) for j in range(len(original_streams[i])) if original_streams[i][j] != new_values[i][j])
+        modification_percentage = (modified_values / total_values) * 100 if total_values > 0 else 0
+        # Write to log file, set file type to hidden and read only, and make it append only (if possible)
+        logfile = "\\\\192.168.5.6\\IPL-VLD-Calibration Management\\1. Common\\Software\\Kimo Studio\\Activity.log"
+        # if doesn't exist, create it, or if file gets too big, recreate it (e.g. larger than 1GB)
+        if os.path.exists(logfile) and os.path.getsize(logfile) > 1024 * 1024 * 1024:
+            os.remove(logfile)
+        if not os.path.exists(logfile):
+            with open(logfile, "w") as f:
+                f.write("Kimo Studio Activity Log\n")
+                f.write("=" * 50 + "\n")
+        # check value of file attribute, if it is not hidden, set it to hidden
+        try:
+            import ctypes
+            if not (ctypes.windll.kernel32.GetFileAttributesW(logfile) & 2):  # 2 = FILE_ATTRIBUTE_HIDDEN
+                ctypes.windll.kernel32.SetFileAttributesW(logfile, 2)  # 2 = FILE_ATTRIBUTE_HIDDEN
+        except:
+            pass
+        os.chmod(logfile, 0o644) # remove read only
+        with open(logfile, "a") as f:
+            f.write(f"UserName: {username}\n")
+            f.write(f"IP Address: {ip_address}\n")
+            f.write(f"MAC Address: {mac_formatted}\n")
+            f.write(f"Modified at: {current_time}\n")
+            f.write(f"Original File: {self.file_path}\n")
+            f.write(f"Modified File: {save_path}\n")
+            f.write(f"Modification Percentage: {modification_percentage:.2f}%\n")
+            f.write("Static Modifications:\n")
+            f.write(f"\tModel: {"Yes" if static_data['model'] != self.static['model'] else "No"}\n")
+            f.write(f"\tSerial: {"Yes" if static_data['serial'] != self.static['serial'] else "No"}\n")
+            f.write(f"\tVersion: {"Yes" if static_data['version'] != self.static['version'] else "No"}\n")
+            f.write(f"\tStart DateTime: {"Yes" if static_data['start_DTime'] != self.static['start_DTime'] else "No"}\n")
+            f.write("-" * 50 + "\n")
+        
+        os.chmod(logfile, 0o444) # set to read only
 
     def terminate_excel_with_file(self, file_path):
         """Terminate any process that has file_path open (e.g., Excel)."""
