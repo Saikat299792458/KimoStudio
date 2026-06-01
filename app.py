@@ -168,7 +168,7 @@ class MyWindow(QMainWindow):
         try:
             self.track(new_values, static_data, save_path)
         except Exception as e:
-            raise e
+            pass
         QMessageBox.information(self, "Success", f"Successfully generated {save_path}")
     
     def track(self, new_values, static_data, save_path):

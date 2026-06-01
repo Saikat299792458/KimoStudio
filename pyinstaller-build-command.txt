@@ -1,0 +1,1 @@
+pyinstaller --onefile --noconsole --version-file=version.txt --icon=KS.ico -n KimoStudio app.py
